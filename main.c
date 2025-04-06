@@ -1,229 +1,133 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
-#include "instructions.h"
+#include <SDL3/SDL.h>
 #include "cpu.h"
+#include "gpu.h"
 #include "bus.h"
 
-const char* rt_lookup[] = {
-    "<NONE>", "A", "F", "B", "C", "D", "E", "H",
-    "L", "AF", "BC", "DE", "HL", "SP", "PC"
-};
+// Hardcoded ROM path (adjust to your actual ROM location)
+char* fixed_rom_path = "C:\\Users\\TriBlackInferno\\Documents\\Piracy\\gba\\tetris.gb";
 
-int inst_size(const instruction* inst) {
-    if (!inst) return 1;
+void load_rom(const char* path, uint16_t load_addr) {
+    // Hardcoded ROM path (use the correct path to your ROM)
+    const char* fixed_rom_path = "C:\\Users\\TriBlackInferno\\Documents\\Piracy\\gba\\tetris.gb";  // Change this to the actual ROM path
+    // const char* fixed_rom_path = "C:\\Users\\TriBlackInferno\\Documents\\Piracy\\gba\\PokemonBlue.gb";
 
-    switch (inst->mode) {
-    case AM_IMP:    return 1;
-    case AM_R:      return 1;
-    case AM_R_R:    return 1;
-    case AM_MR_R:   return 1;
-    case AM_R_MR:   return 1;
-    case AM_MR:     return 1;
-    case AM_R_D8:   return 2;
-    case AM_D8:     return 2;
-    case AM_A8_R:   return 2;
-    case AM_R_A8:   return 2;
-    case AM_R_D16:  return 3;
-    case AM_D16:    return 3;
-    case AM_A16_R:  return 3;
-    case AM_R_HLI:  return 1;
-    case AM_R_HLD:  return 1;
-    case AM_HLI_R:  return 1;
-    case AM_HLD_R:  return 1;
-    case AM_HL_SPR: return 2;
-    case AM_MR_D8:  return 2;
-    case AM_R_A16:  return 3;
-    default:        return 1;
+    FILE* file = fopen(fixed_rom_path, "rb");
+    if (!file) {
+        printf("Failed to open ROM file\n");
+        return;
     }
-}
 
-void print_usage(const char* program_name) {
-    printf("GameBoy ROM Disassembler\n");
-    printf("Usage: %s <rom_file.gb>\n\n", program_name);
-    printf("Example:\n  %s \"roms/tetris.gb\"\n", program_name);
-}
+    dump_memory(0x0000, 256);  // Dump first 256 bytes
+    dump_memory(0x0200, 256);  // Dump around the jump target
 
-const char* get_operand_format(in_type type, addr_mode mode) {
-    if (type == IN_LDH) return "FF00+%02Xh";
-    return "%02Xh";
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (size > 0x10000 - load_addr) {
+        printf("ROM too large\n");
+        fclose(file);
+        return;
+    }
+
+    fread(&memory[load_addr], 1, size, file);
+    fclose(file);
+    printf("Loaded ROM to memory at 0x%04X\n", load_addr);
 }
 
 int main(int argc, char* argv[]) {
-    // Handle command line arguments
-    const char* rom_file_path = "C:\\Users\\TriBlackInferno\\Documents\\Piracy\\gba\\tetris.gb";
-
-    FILE* rom_file = fopen(rom_file_path, "rb");
-    if (!rom_file) {
-        printf("Error: Could not open ROM file: %s\n", rom_file_path);
+    // Initialize SDL3
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        printf("SDL initialization failed: %s\n", SDL_GetError());
         return 1;
     }
 
-    // Read ROM file
-    fseek(rom_file, 0, SEEK_END);
-    long rom_size = ftell(rom_file);
-    fseek(rom_file, 0, SEEK_SET);
-
-    if (rom_size <= 0) {
-        printf("Error: Invalid ROM file size\n");
-        fclose(rom_file);
+    // Create window (scaled 4x for visibility)
+    SDL_Window* window = SDL_CreateWindow("GameBoy Emulator",
+        640, 480,
+        SDL_WINDOW_RESIZABLE);
+    if (!window) {
+        printf("Window creation failed: %s\n", SDL_GetError());
+        SDL_Quit();
         return 1;
     }
 
-    uint8_t* rom_data = malloc(rom_size);
-    if (!rom_data || fread(rom_data, 1, rom_size, rom_file) != rom_size) {
-        printf("Error: Failed to read ROM data\n");
-        if (rom_data) free(rom_data);
-        fclose(rom_file);
+    // Create renderer
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, NULL, 0);
+    if (!renderer) {
+        printf("Renderer creation failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
         return 1;
     }
-    fclose(rom_file);
 
-    printf("ROM: %s (%ld bytes)\n", rom_file_path, rom_size);
-    printf("Disassembly:\n\n");
+    // Create texture for GameBoy output (160x144)
+    SDL_Texture* texture = SDL_CreateTexture(renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        160, 144);
+    if (!texture) {
+        printf("Texture creation failed: %s\n", SDL_GetError());
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
 
-    cpu_context ctx = { 0 };
-    long pc = 0;
-    int count = 0;
+    // Initialize emulator components
+    gpu_init();
+    cpu_context ctx;
+    cpu_init(&ctx);
 
-    // Header with fixed-width columns
-    printf("%-8s %-8s %-22s %-6s\n", "Addr", "Opcode", "Instruction", "Bytes");
-    printf("-------- -------- ---------------------- ------\n");
+    // Load ROM
+    printf("Loading ROM from: %s\n", fixed_rom_path);
+    load_rom(fixed_rom_path, 0x0100);  // Standard GameBoy ROM load address
 
-    while (pc < rom_size) {
-        uint8_t opcode = rom_data[pc];
-        instruction* inst = instruction_by_opcode(opcode);
-
-        // Print address and opcode
-        printf("%-8lX %-8X ", pc, opcode);
-
-        if (!inst || inst->type == IN_ERR) {
-            printf("DB %02Xh                ; Unknown\n", opcode);
-            pc++;
-            count++;
-            continue;
-        }
-
-        // Setup context
-        ctx.cur_inst = inst;
-        ctx.regs.pc = pc;
-        ctx.opcode = opcode;
-
-        // Handle instruction size and operands
-        int size = inst_size(inst);
-        if (size > 1 && pc + size <= rom_size) {
-            if (size == 2) {
-                ctx.fetched_data = rom_data[pc + 1];
-            }
-            else if (size == 3) {
-                ctx.fetched_data = (rom_data[pc + 2] << 8) | rom_data[pc + 1];
+    // Main emulation loop
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                running = false;
             }
         }
 
-        // Print instruction mnemonic
-        printf("%-22s ", inst_name(inst->type));
-
-        // Print operands based on addressing mode
-        switch (inst->mode) {
-        case AM_IMP: break;
-
-        case AM_R:
-            printf("%s", rt_lookup[inst->reg_1]);
-            break;
-
-        case AM_R_R:
-            printf("%s, %s", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_R_D8:
-            printf("%s, %02Xh", rt_lookup[inst->reg_1], ctx.fetched_data);
-            break;
-
-        case AM_D8:
-            printf("%s", get_operand_format(inst->type, inst->mode), ctx.fetched_data);
-            break;
-
-        case AM_R_D16:
-            printf("%s, %04Xh", rt_lookup[inst->reg_1], ctx.fetched_data);
-            break;
-
-        case AM_D16:
-            printf("%04Xh", ctx.fetched_data);
-            break;
-
-        case AM_A8_R:
-            printf("(%s), %s", inst->type == IN_LDH ? "FF00+" : "", rt_lookup[inst->reg_2]);
-            if (inst->type == IN_LDH) printf("%02Xh", ctx.fetched_data);
-            break;
-
-        case AM_R_A8:
-            printf("%s, (%s%s", rt_lookup[inst->reg_1], inst->type == IN_LDH ? "FF00+" : "", inst->type == IN_LDH ? ")" : "");
-            if (inst->type == IN_LDH) printf("%02Xh)", ctx.fetched_data);
-            break;
-
-        case AM_MR_R:
-            printf("(%s), %s", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_R_MR:
-            printf("%s, (%s)", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_MR:
-            printf("(%s)", rt_lookup[inst->reg_1]);
-            break;
-
-        case AM_HLI_R:
-            printf("(%s+), %s", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_HLD_R:
-            printf("(%s-), %s", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_R_HLI:
-            printf("%s, (%s+)", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_R_HLD:
-            printf("%s, (%s-)", rt_lookup[inst->reg_1], rt_lookup[inst->reg_2]);
-            break;
-
-        case AM_HL_SPR: {
-            int8_t offset = (int8_t)ctx.fetched_data;
-            printf("HL, SP%+d (%+02Xh)", offset, ctx.fetched_data);
-            break;
+        // Run one frame (70224 cycles = 1 frame)
+        int frame_cycles = 0;
+        while (frame_cycles < 70224) {
+            int cycles = cpu_step(&ctx);
+            gpu_step(cycles);
+            frame_cycles += cycles;
         }
 
-        case AM_MR_D8:
-            printf("(%s), %02Xh", rt_lookup[inst->reg_1], ctx.fetched_data);
-            break;
+        // Update display if in VBlank
+        if (gpu_get_context()->mode == 1 && gpu_get_context()->line == 144) {
+            // Lock texture for writing
+            void* pixels;
+            int pitch;
+            SDL_LockTexture(texture, NULL, &pixels, &pitch);
 
-        case AM_A16_R:
-            printf("(%04Xh), %s", ctx.fetched_data, rt_lookup[inst->reg_2]);
-            break;
+            // Copy framebuffer
+            memcpy(pixels, gpu_get_context()->framebuffer, 160 * 144 * sizeof(uint32_t));
 
-        case AM_R_A16:
-            printf("%s, (%04Xh)", rt_lookup[inst->reg_1], ctx.fetched_data);
-            break;
+            SDL_UnlockTexture(texture);
 
-        default:
-            printf("; Unhandled mode %d", inst->mode);
+            // Render
+            SDL_RenderClear(renderer);
+            SDL_RenderTexture(renderer, texture, NULL, NULL);
+            SDL_RenderPresent(renderer);
         }
-
-        // Show raw bytes
-        printf(" %-6s", ""); // Padding to ensure column alignment
-        for (int i = 0; i < size && pc + i < rom_size; i++) {
-            printf("%02X ", rom_data[pc + i]);
-        }
-        printf("\n");
-
-        pc += size;
-        count++;
     }
 
-    printf("\nFinished. Processed %d instructions.\n", count);
-    free(rom_data);
+    // Cleanup
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
     return 0;
 }

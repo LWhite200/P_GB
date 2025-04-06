@@ -1,90 +1,108 @@
+// bus.c
 #include "bus.h"
-#include "cpu.h"
-#include <stdint.h>
+#include "cpu.h"  // Add this to access cpu_context
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-// Assuming the following arrays are defined somewhere in your project, such as in "memory.c" or elsewhere
+uint8_t memory[0x10000];  // 64KB address space
 
-uint8_t rom[0x8000];  // 32KB ROM (0x0000 - 0x7FFF)
-uint8_t ext_ram[0x2000];  // 8KB external RAM (0xA000 - 0xBFFF)
-uint8_t io_registers[0x80];  // 128 bytes of I/O registers (0xFF00 - 0xFF7F)
-uint8_t hram[0x7F];  // 127 bytes of HRAM (0xFF80 - 0xFFFE)
-uint8_t wram[0x2000];  // 8KB Work RAM (0xC000 - 0xDFFF)
+static cpu_context* bus_ctx = NULL;
 
-// Function to read from ROM (0x0000 - 0x7FFF)
-uint8_t rom_read(uint16_t address) {
-    if (address < 0x8000) {
-        return rom[address];  // Return data from ROM
-    }
-    printf("INVALID ROM ACCESS AT %04X\n", address);
-    exit(-1);  // Invalid ROM access
+// Add this initialization function
+void bus_link_context(cpu_context* ctx) {
+    bus_ctx = ctx;
 }
 
-// Function to read from external RAM (0xA000 - 0xBFFF)
-uint8_t ext_ram_read(uint16_t address) {
-    address -= 0xA000;  // External RAM starts at 0xA000
-    if (address < 0x2000) {
-        return ext_ram[address];  // Return data from external RAM
-    }
-    printf("INVALID EXTERNAL RAM ACCESS AT %04X\n", address);
-    exit(-1);  // Invalid external RAM access
+void bus_reset() {
+    memset(memory, 0, sizeof(memory));
 }
 
-// Function to read from I/O registers (0xFF00 - 0xFF7F)
-uint8_t io_read(uint16_t address) {
-    address -= 0xFF00;  // I/O registers start at 0xFF00
-    if (address < 0x80) {
-        return io_registers[address];  // Return data from I/O registers
+// In bus.c
+uint8_t bus_read(uint16_t addr) {
+
+    if (addr == 0xFF0F && bus_ctx) return bus_ctx->int_flags | 0xE0;
+    if (addr == 0xFFFF && bus_ctx) return bus_ctx->int_enable;
+
+    if (addr == 0xFF44) return 0x90; // Always say we're at scanline 144
+    if (addr == 0xFF0F) return 0x01; // Always say VBlank happened
+    // Handle memory-mapped I/O
+    if (addr >= 0xFF00 && addr <= 0xFF7F) {
+        // Default values for critical registers
+        if (addr == 0xFF00) return 0xCF; // Joypad
+        if (addr == 0xFF04) return rand() & 0xFF; // DIV
+        if (addr == 0xFF40) return 0x91; // LCDC
+        return 0;
     }
-    printf("INVALID I/O ACCESS AT %04X\n", address);
-    exit(-1);  // Invalid I/O access
+    return memory[addr];
 }
 
-// Function to read from HRAM (0xFF80 - 0xFFFE)
-uint8_t hram_read(uint16_t address) {
-    address -= 0xFF80;  // HRAM starts at 0xFF80
-    if (address < 0x7F) {
-        return hram[address];  // Return data from HRAM
+void bus_write(uint16_t addr, uint8_t val) {
+    // Handle memory-mapped I/O first
+    switch (addr) {
+        // Interrupt flags
+    case 0xFF0F:
+        if (bus_ctx) bus_ctx->int_flags = val & 0x1F;
+        return;
+
+        // Interrupt enable
+    case 0xFFFF:
+        if (bus_ctx) bus_ctx->int_enable = val;
+        return;
+
+        // LCD Control
+    case 0xFF40: case 0xFF41: case 0xFF42: case 0xFF43:
+        case 0xFF44: case 0xFF45: case 0xFF46: case 0xFF47:
+        case 0xFF48: case 0xFF49: case 0xFF4A: case 0xFF4B:
+        // Handle LCD controller writes
+        memory[addr] = val;
+        return;
+
+        // Timer registers
+    case 0xFF04: case 0xFF05: case 0xFF06: case 0xFF07:
+        memory[addr] = val;
+        return;
+
+        // Joypad
+    case 0xFF00:
+        memory[addr] = val;
+        return;
     }
-    printf("INVALID HRAM ACCESS AT %04X\n", address);
-    exit(-1);  // Invalid HRAM access
+
+    // Protect ROM areas
+    if (addr < 0x8000) {
+        printf("Attempted write to ROM area: %04X\n", addr);
+        return;
+    }
+
+    // Protect HRAM echo area
+    if (addr >= 0xFEA0 && addr <= 0xFEFF) {
+        printf("Attempted write to prohibited area: %04X\n", addr);
+        return;
+    }
+
+    // Handle VRAM writes
+    if (addr >= 0x8000 && addr <= 0x9FFF) {
+        // Add VRAM access checks if needed
+        memory[addr] = val;
+        return;
+    }
+
+    // Handle OAM writes
+    if (addr >= 0xFE00 && addr <= 0xFE9F) {
+        // Add OAM access checks if needed
+        memory[addr] = val;
+        return;
+    }
+
+    // Default case - write to memory
+    memory[addr] = val;
 }
 
-// Function to read from WRAM (0xC000 - 0xDFFF)
-uint8_t wram_read(uint16_t address) {
-    address -= 0xC000;  // WRAM starts at 0xC000
-    if (address < 0x2000) {
-        return wram[address];  // Return data from WRAM
+void bus_load_rom(uint16_t address, const uint8_t* data, size_t size) {
+    if (address + size > 0x10000) {
+        printf("ROM too large for memory\n");
+        exit(1);
     }
-    printf("INVALID WRAM ACCESS AT %04X\n", address);
-    exit(-1);  // Invalid WRAM access
+    memcpy(&memory[address], data, size);
 }
-
-// Function to read from the bus, handles different memory regions
-uint8_t bus_read(uint16_t address) {
-    if (address >= 0x0000 && address <= 0x7FFF) {
-        // Handle reading from ROM
-        return rom_read(address);  // Calls rom_read for ROM access
-    }
-    else if (address >= 0xA000 && address <= 0xBFFF) {
-        // Handle reading from external RAM
-        return ext_ram_read(address);  // Calls ext_ram_read for external RAM
-    }
-    else if (address >= 0xC000 && address <= 0xDFFF) {
-        // Handle reading from WRAM (0xC000 - 0xDFFF)
-        return wram_read(address);  // Calls wram_read for WRAM
-    }
-    else if (address >= 0xFF00 && address <= 0xFF7F) {
-        // Handle reading from I/O registers
-        return io_read(address);  // Calls io_read for I/O access
-    }
-    else if (address >= 0xFF80 && address <= 0xFFFE) {
-        // Handle reading from HRAM (0xFF80 - 0xFFFE)
-        return hram_read(address);  // Calls hram_read for HRAM
-    }
-
-    printf("INVALID MEMORY ACCESS AT %04X\n", address);
-    exit(-1);  // Invalid memory access
-}
-

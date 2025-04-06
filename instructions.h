@@ -2,6 +2,7 @@
 
 #include "common.h"
 
+
 typedef enum {
     AM_IMP,
     AM_R_D16,
@@ -41,7 +42,8 @@ typedef enum {
     RT_DE,
     RT_HL,
     RT_SP,
-    RT_PC
+    RT_PC,
+    RT_COUNT
 } reg_type;
 
 typedef enum {
@@ -110,6 +112,7 @@ typedef struct {
     u8 param;
 } instruction;
 
+// Function definition for instruction_by_opcode not found error
 instruction* instruction_by_opcode(u8 opcode);
 
 char* inst_name(in_type t);

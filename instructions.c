@@ -4,12 +4,6 @@
 
 // Assuming 'instruction' structure exists and has a field 'opcode' or similar
 
-
-
-
-
-
-
 instruction instructions[0x100] = {
     [0x00] = {IN_NOP, AM_IMP},
     [0x01] = {IN_LD, AM_R_D16, RT_BC},
@@ -69,7 +63,7 @@ instruction instructions[0x100] = {
     [0x31] = {IN_LD, AM_R_D16, RT_SP},
     [0x32] = {IN_LD, AM_HLD_R, RT_HL, RT_A},
     [0x33] = {IN_INC, AM_R, RT_SP},
-    [0x34] = {IN_INC, AM_MR, RT_HL},
+    [0x34] = {IN_INC, AM_MR, RT_NONE, RT_NONE},  // INC (HL) - no registers needed
     [0x35] = {IN_DEC, AM_MR, RT_HL},
     [0x36] = {IN_LD, AM_MR_D8, RT_HL},
     [0x37] = {IN_SCF},
@@ -290,7 +284,10 @@ instruction instructions[0x100] = {
 
 
 
-instruction* instruction_by_opcode(u8 opcode) {
+instruction* instruction_by_opcode(uint8_t opcode) {
+    if (opcode == 0xCB) {
+        return NULL; // CB-prefixed instructions are handled separately
+    }
     return &instructions[opcode];
 }
 
