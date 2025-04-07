@@ -105,6 +105,7 @@ typedef enum {
 typedef struct {
     in_type type;
     addr_mode mode;
+    uint8_t length;
     reg_type reg_1;
     reg_type reg_2;
     reg_type reg_3;

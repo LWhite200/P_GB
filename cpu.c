@@ -453,110 +453,44 @@ static void cpu_push(cpu_context* ctx, uint16_t val) {
     bus_write(ctx->regs.sp, val & 0xFF);      // Write low byte
 }
 
-
-// Execute a single instruction
-// Execute a single instruction
-int cpu_step(cpu_context* ctx) {
-    uint8_t opcode = cpu_fetch(ctx);
-
-    printf("PC:%04X OP:%02X\n", ctx->regs.pc, bus_read(ctx->regs.pc));
-
-    if (ctx->interrupts_master_enable && (ctx->int_enable & ctx->int_flags & 0x1F)) {
-        uint8_t fired = ctx->int_enable & ctx->int_flags;
-        uint16_t addr = 0;
-
-        if (fired & 0x01) addr = 0x40;     // VBlank
-        else if (fired & 0x02) addr = 0x48; // LCD STAT
-        else if (fired & 0x04) addr = 0x50; // Timer
-        else if (fired & 0x08) addr = 0x58; // Serial
-        else if (fired & 0x10) addr = 0x60; // Joypad
-
-        if (addr) {
-            ctx->interrupts_master_enable = false;
-            ctx->int_flags &= ~(fired & 0x1F);
-            cpu_push(ctx, ctx->regs.pc);
-            ctx->regs.pc = addr;
-            return 20;
-        }
-    }
-
-    if (ctx->ime && (bus_read(0xFF0F) & 0x01)) {
-        bus_write(0xFF0F, 0); // Clear the flag
-        cpu_push(ctx, ctx->regs.pc); // Save current position
-        ctx->regs.pc = 0x40; // Jump to VBlank handler
-        return 20;
-    }
-
-    // Handle CB-prefixed instructions
-    if (opcode == 0xCB) {
-        uint8_t cb_opcode = cpu_fetch(ctx);
-        ctx->regs.pc++;  // Increment the program counter for CB instructions
-
-        // Execute the CB-prefixed instruction
-        int cycles = execute_cb_instruction(ctx, cb_opcode);
-        if (cycles == -1) {
-            printf("Unknown CB opcode: CB %02X at PC=%04X\n", cb_opcode, ctx->regs.pc - 1);
-            return -1;
-        }
-
-        return cycles;  // Return the number of cycles for the CB instruction
-    }
-
-    // Handle regular instructions (non-CB-prefixed)
-    instruction* inst = instruction_by_opcode(opcode);
-
-    if (!inst) {
-        printf("Unknown opcode: %02X at PC=%04X\n", opcode, ctx->regs.pc - 1);
-        return -1;
-    }
-
-    ctx->cur_inst = inst;
-
-    switch (inst->type) {
-    case IN_NOP:  return 4;
-    case IN_LD:   return execute_ld(ctx, inst);
-    case IN_ADD:  return execute_add(ctx, inst);
-    case IN_RET:  return execute_ret(ctx, inst);
-    case IN_ADC:  return execute_adc(ctx, inst);
-    case IN_SUB:  return execute_sub(ctx, inst);
-    case IN_AND:  return execute_and(ctx, inst);
-    case IN_OR:   return execute_or(ctx, inst);
-    case IN_XOR:  return execute_xor(ctx, inst);
-    case IN_CP:   return execute_cp(ctx, inst);
-    case IN_INC:  return execute_inc(ctx, inst);
-    case IN_DEC:  return execute_dec(ctx, inst);
-    case IN_JP:   return execute_jp(ctx, inst);
-    case IN_CALL: return execute_call(ctx, inst);
-    case IN_PUSH: return execute_push(ctx, inst);
-    case IN_POP:  return execute_pop(ctx, inst);
-    case IN_RLC:  return execute_rlc(ctx, inst);
-    case IN_RRC:  return execute_rrc(ctx, inst);
-    case IN_RLA:  return execute_rla(ctx);
-    case IN_BIT:  return execute_bit(ctx, inst);
-    case IN_CCF:  return execute_ccf(ctx);
-    case IN_SCF:  return execute_scf(ctx);
-    case IN_CPL:  return execute_cpl(ctx);
-    case IN_DAA:  return execute_daa(ctx);
-    case IN_RST:  return execute_rst(ctx, inst);
-    case IN_EI:   return execute_ei(ctx);
-    case IN_DI:   return execute_di(ctx);
-    case IN_STOP: return execute_stop(ctx);
-    case IN_HALT: return execute_halt(ctx);
-
-    default:
-        printf("Unimplemented instruction: %s\n", inst_name(inst->type));
-        return -1;
-    }
-}
-
-static int execute_push(cpu_context* ctx, instruction* inst) {
-    uint16_t val = cpu_read_reg16(ctx, inst->reg_1);
-    ctx->regs.sp -= 2;
-    write16(ctx, ctx->regs.sp, val);
-    return 16;
+int execute_jr(cpu_context* ctx, instruction* inst) {
+    int8_t offset = cpu_fetch(ctx); // Fetch the signed 8-bit offset
+    ctx->regs.pc += offset; // Apply the offset to the PC
+    return 12; // JR takes 12 cycles
 }
 
 
+int execute_ldh(cpu_context* ctx, uint8_t opcode) {
+    uint8_t address;
+
+    if (opcode == 0xE0) { // LDH (0xFF00 + d8), A
+        address = cpu_fetch(ctx); // Fetch the 8-bit address (d8)
+        bus_write(0xFF00 + address, ctx->regs.a); // Write A to the I/O port (0xFF00 + d8)
+        ctx->regs.pc++; // Increment PC after handling the instruction
+        return 12; // LDH (0xFF00 + d8), A takes 12 cycles
+    }
+    else if (opcode == 0xF0) { // LDH A, (0xFF00 + d8)
+        address = cpu_fetch(ctx); // Fetch the 8-bit address (d8)
+        ctx->regs.a = bus_read(0xFF00 + address); // Read the value from the I/O port (0xFF00 + d8) into A
+        ctx->regs.pc++; // Increment PC after handling the instruction
+        return 12; // LDH A, (0xFF00 + d8) takes 12 cycles
+    }
+
+    return -1; // Unknown LDH opcode
+}
+
+
+
+
+int execute_rrca(cpu_context* ctx) {
+    uint8_t carry = ctx->regs.f & 0x10; // Get the current carry flag (bit 4 in F register)
+    uint8_t new_carry = ctx->regs.a & 0x01; // Get the least significant bit of A to set as the new carry
+
+    ctx->regs.a = (ctx->regs.a >> 1) | (carry << 7); // Shift A right by 1 and put the old carry into bit 7
+    ctx->regs.f = (ctx->regs.f & 0xF0) | (new_carry ? 0x10 : 0x00); // Update the carry flag
+
+    return 4; // RRCA takes 4 cycles
+}
 
 
 static int execute_ld(cpu_context* ctx, instruction* inst) {
@@ -714,7 +648,7 @@ static int execute_ld(cpu_context* ctx, instruction* inst) {
         break;
     }
 
-                // ... (other cases remain similar but with added debug prints) ...
+    // ... (other cases remain similar but with added debug prints) ...
 
     default:
         printf("UNIMPLEMENTED LD MODE: %d\n", inst->mode);
@@ -724,6 +658,104 @@ static int execute_ld(cpu_context* ctx, instruction* inst) {
     printf(" (cycles:%d)\n", cycles);
     return cycles;
 }
+
+
+
+
+// Execute a single instruction
+// Execute a single instruction
+// Execute a single instruction
+int cpu_step(cpu_context* ctx) {
+    uint8_t opcode = cpu_fetch(ctx); // Fetch the opcode from memory
+    printf("PC:%04X OP:%02X\n", ctx->regs.pc, bus_read(ctx->regs.pc));
+
+    // Handle interrupts and other special operations (same as your code above)
+
+    // Handle CB-prefixed instructions
+    if (opcode == 0xCB) {
+        uint8_t cb_opcode = cpu_fetch(ctx); // Fetch the CB-prefixed opcode
+        ctx->regs.pc++;  // Increment the program counter for CB instructions
+
+        // Execute the CB-prefixed instruction
+        int cycles = execute_cb_instruction(ctx, cb_opcode);
+        if (cycles == -1) {
+            printf("Unknown CB opcode: CB %02X at PC=%04X\n", cb_opcode, ctx->regs.pc - 1);
+            return -1;
+        }
+
+        return cycles;  // Return the number of cycles for the CB instruction
+    }
+
+    // Handle regular instructions (non-CB-prefixed)
+    instruction* inst = instruction_by_opcode(opcode); // Get instruction by opcode
+
+    if (!inst) {
+        printf("Unknown opcode: %02X at PC=%04X\n", opcode, ctx->regs.pc - 1);
+        return -1;
+    }
+
+    ctx->cur_inst = inst;
+
+    // Execute the instruction and update PC accordingly
+    int cycles = 0;
+    switch (inst->type) {
+    case IN_NOP:   ctx->regs.pc++; return 4;
+    case IN_LD:    cycles = execute_ld(ctx, inst); break;
+    case IN_ADD:   cycles = execute_add(ctx, inst); break;
+    case IN_RET:   cycles = execute_ret(ctx, inst); break;
+    case IN_ADC:   cycles = execute_adc(ctx, inst); break;
+    case IN_SUB:   cycles = execute_sub(ctx, inst); break;
+    case IN_JR:    cycles = execute_jr(ctx, inst); break; // JR instruction
+    case IN_AND:   return execute_and(ctx, inst);
+    case IN_OR:    return execute_or(ctx, inst);
+    case IN_XOR:   return execute_xor(ctx, inst);
+    case IN_CP:    return execute_cp(ctx, inst);
+    case IN_INC:   return execute_inc(ctx, inst);
+    case IN_DEC:   return execute_dec(ctx, inst);
+    case IN_JP:    return execute_jp(ctx, inst);
+    case IN_CALL:  return execute_call(ctx, inst);
+    case IN_PUSH:  return execute_push(ctx, inst);
+    case IN_POP:   return execute_pop(ctx, inst);
+    case IN_RLC:   return execute_rlc(ctx, inst);
+    case IN_RRC:   return execute_rrc(ctx, inst);
+    case IN_RLA:   return execute_rla(ctx);
+    case IN_BIT:   return execute_bit(ctx, inst);
+    case IN_CCF:   return execute_ccf(ctx);
+    case IN_SCF:   return execute_scf(ctx);
+    case IN_CPL:   return execute_cpl(ctx);
+    case IN_DAA:   return execute_daa(ctx);
+    case IN_RST:   return execute_rst(ctx, inst);
+    case IN_EI:    return execute_ei(ctx);
+    case IN_DI:    return execute_di(ctx);
+    case IN_STOP:  return execute_stop(ctx);
+    case IN_HALT:  return execute_halt(ctx);
+    case IN_LDH:   return execute_ldh(ctx, opcode); // Pass opcode directly to execute_ldh
+    case IN_RRCA:  return execute_rrca(ctx); // RRCA instruction
+        // Handle other instructions...
+
+    default:
+        printf("Unimplemented instruction: %s\n", inst_name(inst->type));
+        return -1;
+    }
+
+    // Ensure PC is updated correctly for all instructions
+    ctx->regs.pc += (inst->length - 1); // Update PC to reflect instruction length
+
+    return cycles;
+}
+
+
+static int execute_push(cpu_context* ctx, instruction* inst) {
+    uint16_t val = cpu_read_reg16(ctx, inst->reg_1);
+    ctx->regs.sp -= 2;
+    write16(ctx, ctx->regs.sp, val);
+    return 16;
+}
+
+
+
+
+
 
 static int execute_jp(cpu_context* ctx, instruction* inst) {
     uint16_t addr;
