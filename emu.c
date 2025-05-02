@@ -1,70 +1,24 @@
 #include <stdio.h>
-#include "emu.h"
+#include <stdlib.h>
 #include "cart.h"
-#include "cpu.h"
-#include <SDL3/SDL.h>
-//#include <SDL3/SDL_ttf.h>
-
-/*
-	EMU components:
-
-	|Cart|
-	|CPU|
-	|Address Bus|
-	|PPU|
-	|Timer|
-
-*/
-
-static emu_context ctx;
-
-emu_context* emu_get_context() {
-	return &ctx;
-}
-
-void delay(u32 ms) {
-	SDL_Delay(ms);
-}
 
 int emu_run(int argc, char** argv) {
-	if (argc < 2) {
-		printf("Usage: emu <rom_file>\n");
-		return -1;
-	}
+    // Change this to the actual file you want to read
+    const char* rom_path = "C:\\Users\\TriBlackInferno\\Documents\\Piracy\\gba\\tetris.gb";
 
-	if (!cart_load(argv[1])) {
-		printf("Failed to load ROM file: %s\n", argv[1]);
-		return -2;
-	}
+    size_t rom_size;
+    unsigned char* rom = load_rom(rom_path, &rom_size);
+    if (!rom) {
+        printf("Failed to load ROM at: %s\n", rom_path);
+        return 1;
+    }
 
-	printf("Cart loaded..\n");
+    printf("ROM loaded: %s (%zu bytes)\n\n", rom_path, rom_size);
 
-	SDL_Init(SDL_INIT_VIDEO);
-	/*
-	printf("SDL INIT\n");
-	TTF_Init();
-	printf("TTF INIT\n");
-	*/
+    for (size_t pc = 0x0100; pc < rom_size; ++pc) {
+        printf("0x%04zX: 0x%02X\n", pc, rom[pc]);
+    }
 
-	cpu_init();
-
-	ctx.running = true;
-	ctx.paused = false;
-	ctx.ticks = 0;
-
-	while (ctx.running) {
-		if (ctx.paused) {
-			delay(10);
-			continue;
-		}
-
-		if (!cpu_step()) {
-			printf("CPU Stopped\n");
-			return -3;
-		}
-
-		ctx.ticks++;
-	}
-
-	return 0;
+    free(rom);
+    return 0;
 }

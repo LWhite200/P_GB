@@ -1,12 +1,6 @@
-#pragma
+#ifndef EMU_H
+#define EMU_H
 
-#include "common.h"
+int emu_run(int argc, char** argv);
 
-typedef struct {
-	bool paused;
-	bool running;
-	u64 ticks;
-} emu_context;
-
-int emu_run(int arg, char** argv);
-emu_context* emu_get_context();
+#endif
